@@ -1,68 +1,70 @@
--- === 必要なのは保存先だけ ===
-:setvar OUTDIR "C:\temp\backup"
+-- ===== 設定 =====
+:setvar OUTDIR C:\temp\backup
+:setvar GENFILE C:\temp\backup\_csv_all_gen.sql
 
--- 生成用の一時ファイル（どこでもOK）
-:setvar GENFILE "C:\temp\backup\_csv_all_gen.sql"
+-- 出力ルートの作成（なければ作る）
+!! if not exist "$(OUTDIR)" mkdir "$(OUTDIR)"
 
--- ここから “実行用スクリプト” を生成して、その場で実行します
+-- ===== ここから生成 =====
 :out $(GENFILE)
+SET NOCOUNT ON;
 
 DECLARE @d char(8)=CONVERT(char(8),GETDATE(),112);  -- YYYYMMDD
-PRINT '!! if not exist "$(OUTDIR)\'+@d+'" mkdir "$(OUTDIR)\'+@d+'"';
-PRINT '!! echo Export start: %DATE% %TIME%';
-PRINT '';
+SELECT '!! if not exist "$(OUTDIR)\'+@d+'" mkdir "$(OUTDIR)\'+@d+'"';
+SELECT '!! echo Export start: %DATE% %TIME%';
+SELECT '';
 
-DECLARE @schema sysname,@table sysname;
+DECLARE @s sysname,@t sysname;
 DECLARE c CURSOR LOCAL FAST_FORWARD FOR
   SELECT s.name,t.name
-  FROM sys.tables t
-  JOIN sys.schemas s ON s.schema_id=t.schema_id
-  WHERE t.is_ms_shipped = 0
+  FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id
+  WHERE t.is_ms_shipped=0
   ORDER BY s.name,t.name;
-OPEN c;
-FETCH NEXT FROM c INTO @schema,@table;
 
-WHILE @@FETCH_STATUS = 0
+OPEN c; FETCH NEXT FROM c INTO @s,@t;
+WHILE @@FETCH_STATUS=0
 BEGIN
-  -- 出力先ファイル
-  PRINT ':out $(OUTDIR)\'+@d+'\'+@schema+'.'+@table+'.csv';
-  PRINT 'SET NOCOUNT ON;';
+  -- 出力ファイル切替
+  SELECT ':out $(OUTDIR)\'+@d+'\'+@s+'.'+@t+'.csv';
+  SELECT 'SET NOCOUNT ON;';
 
-  -- テーブル名を変数化
-  PRINT 'DECLARE @schema sysname=N'''+REPLACE(@schema,'''','''''')+''', @table sysname=N'''+REPLACE(@table,'''','''''')+''';';
+  -- テーブル名を変数に
+  SELECT 'DECLARE @schema sysname=N'''+REPLACE(@s,'''','''''')+''', @table sysname=N'''+REPLACE(@t,'''','''''')+''';';
 
-  -- ヘッダ行（"col1","col2",...）
-  PRINT ';WITH cols AS (';
-  PRINT '  SELECT c.name colname, c.column_id';
-  PRINT '  FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id JOIN sys.columns c ON c.object_id=t.object_id';
-  PRINT '  WHERE s.name=@schema AND t.name=@table';
-  PRINT '  ORDER BY c.column_id';
-  PRINT ')';
-  PRINT 'DECLARE @header nvarchar(max)=STUFF((';
-  PRINT '  SELECT '','' + ''"'' + colname + ''"'' FROM cols FOR XML PATH(''''''),TYPE).value(''.'',''nvarchar(max)''),1,1,'''');';
-  PRINT 'PRINT @header;';
+  -- ヘッダ（"col1","col2",...）
+  SELECT ';WITH cols AS (SELECT c.name colname,c.column_id
+           FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id
+           JOIN sys.columns c ON c.object_id=t.object_id
+           WHERE s.name=@schema AND t.name=@table
+           ORDER BY c.column_id)
+         DECLARE @header nvarchar(max)=STUFF((SELECT '',''+''"''+colname+''"'' FROM cols FOR XML PATH(''''),TYPE).value(''.'',''nvarchar(max)''),1,1,'''');
+         SELECT @header;';
 
-  -- 本文（各列をCSVセーフ："→""、CR/LF→空白、カンマはダブルクォートで囲む）
-  PRINT 'DECLARE @rowExpr nvarchar(max)=STUFF((';
-  PRINT '  SELECT '' + '','' + '' + '' (''''"'''' + REPLACE(REPLACE(REPLACE(ISNULL(CONVERT(nvarchar(max), '' + QUOTENAME(c.name) + ''),N''''''),N''"'''',N''""""''),CHAR(13),N'' ''),CHAR(10),N'' '') + ''"'''') ''';
-  PRINT '  FROM sys.columns c JOIN sys.tables t ON c.object_id=t.object_id JOIN sys.schemas s ON s.schema_id=t.schema_id';
-  PRINT '  WHERE s.name=@schema AND t.name=@table';
-  PRINT '  ORDER BY c.column_id';
-  PRINT '  FOR XML PATH(''''''),TYPE).value(''.'',''nvarchar(max)''),1,10,'''');';
+  -- 本文（CSVセーフ："→""、改行→空白、各列をダブルクォート）
+  SELECT 'DECLARE @rowExpr nvarchar(max)=STUFF((
+            SELECT '' + '','' + '' + '' (''''"'''' + REPLACE(REPLACE(REPLACE(ISNULL(CONVERT(nvarchar(max), '' + QUOTENAME(c.name) + ''),N''''''),N''"'''',N''""""''),CHAR(13),N'' ''),CHAR(10),N'' '') + ''"'''') ''
+            FROM sys.columns c
+            JOIN sys.tables t ON c.object_id=t.object_id
+            JOIN sys.schemas s ON s.schema_id=t.schema_id
+            WHERE s.name=@schema AND t.name=@table
+            ORDER BY c.column_id
+            FOR XML PATH(''''),TYPE).value(''.'',''nvarchar(max)''),1,10,'''');
+          DECLARE @sql nvarchar(max)=N''SELECT ''+@rowExpr+N'' FROM ''+QUOTENAME(@schema)+N''.''+QUOTENAME(@table)+N'';'';
+          EXEC sp_executesql @sql;';
 
-  PRINT 'DECLARE @sql nvarchar(max)=N''SELECT ''+@rowExpr+N'' FROM ''+QUOTENAME(@schema)+N''.''+QUOTENAME(@table)+N'';'';';
-  PRINT 'EXEC sp_executesql @sql;';
+  -- 出力終了
+  SELECT ':out STDOUT';
+  SELECT '';
 
-  -- ファイル出力終了
-  PRINT ':out STDOUT';
-  PRINT '';
-
-  FETCH NEXT FROM c INTO @schema,@table;
+  FETCH NEXT FROM c INTO @s,@t;
 END
 CLOSE c; DEALLOCATE c;
 
-PRINT '!! echo Done.';
+SELECT '!! echo Done.';
 :out STDOUT
 
--- 生成したスクリプトを実行（全テーブル分のCSVが出力されます）
+-- 生成内容の確認（画面に出す）
+!! type "$(GENFILE)"
+
+-- 生成したスクリプトを実行（全テーブルを書き出す）
 :r $(GENFILE)
